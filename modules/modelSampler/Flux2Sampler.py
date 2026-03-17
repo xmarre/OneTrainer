@@ -1,3 +1,4 @@
+import copy
 import inspect
 from collections.abc import Callable
 
@@ -58,15 +59,20 @@ class Flux2Sampler(BaseModelSampler):
                 generator.manual_seed(seed)
 
             requested_noise_scheduler = noise_scheduler
-            noise_scheduler = create.create_noise_scheduler(
-                requested_noise_scheduler,
-                self.model.noise_scheduler,
-                diffusion_steps,
-            )
-            if noise_scheduler is None:
-                raise ValueError(
-                    f"Unsupported noise scheduler for Flux2Sampler: {requested_noise_scheduler}"
+            # Flux2 hides scheduler selection in the UI and SampleConfig still defaults to DDIM.
+            # Preserve the existing native FlowMatch path for that hidden default.
+            if requested_noise_scheduler == NoiseScheduler.DDIM:
+                noise_scheduler = copy.deepcopy(self.model.noise_scheduler)
+            else:
+                noise_scheduler = create.create_noise_scheduler(
+                    requested_noise_scheduler,
+                    self.model.noise_scheduler,
+                    diffusion_steps,
                 )
+                if noise_scheduler is None:
+                    raise ValueError(
+                        f"Unsupported noise scheduler for Flux2Sampler: {requested_noise_scheduler}"
+                    )
             image_processor = self.pipeline.image_processor
             transformer = self.pipeline.transformer
             vae = self.pipeline.vae
