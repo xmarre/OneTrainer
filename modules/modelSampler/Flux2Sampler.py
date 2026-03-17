@@ -4,7 +4,7 @@ from collections.abc import Callable
 
 from modules.model.Flux2Model import Flux2Model
 from modules.modelSampler.BaseModelSampler import BaseModelSampler, ModelSamplerOutput
-from modules.util import factory
+from modules.util import create, factory
 from modules.util.config.SampleConfig import SampleConfig
 from modules.util.enum.AudioFormat import AudioFormat
 from modules.util.enum.FileType import FileType
@@ -58,7 +58,21 @@ class Flux2Sampler(BaseModelSampler):
             else:
                 generator.manual_seed(seed)
 
-            noise_scheduler = copy.deepcopy(self.model.noise_scheduler)
+            requested_noise_scheduler = noise_scheduler
+            # Flux2 hides scheduler selection in the UI and SampleConfig still defaults to DDIM.
+            # Preserve the existing native FlowMatch path for that hidden default.
+            if requested_noise_scheduler == NoiseScheduler.DDIM:
+                noise_scheduler = copy.deepcopy(self.model.noise_scheduler)
+            else:
+                noise_scheduler = create.create_noise_scheduler(
+                    requested_noise_scheduler,
+                    self.model.noise_scheduler,
+                    diffusion_steps,
+                )
+                if noise_scheduler is None:
+                    raise ValueError(
+                        f"Unsupported noise scheduler for Flux2Sampler: {requested_noise_scheduler}"
+                    )
             image_processor = self.pipeline.image_processor
             transformer = self.pipeline.transformer
             vae = self.pipeline.vae
@@ -98,7 +112,13 @@ class Flux2Sampler(BaseModelSampler):
             # prepare timesteps
             #TODO for other models, too? This is different than with sigmas=None
             sigmas = np.linspace(1.0, 1 / diffusion_steps, diffusion_steps)
-            noise_scheduler.set_timesteps(diffusion_steps, device=self.train_device, mu=mu, sigmas=sigmas)
+            set_timesteps_kwargs = {"device": self.train_device}
+            set_timesteps_parameters = set(inspect.signature(noise_scheduler.set_timesteps).parameters.keys())
+            if "mu" in set_timesteps_parameters:
+                set_timesteps_kwargs["mu"] = mu
+            if "sigmas" in set_timesteps_parameters:
+                set_timesteps_kwargs["sigmas"] = sigmas
+            noise_scheduler.set_timesteps(diffusion_steps, **set_timesteps_kwargs)
             timesteps = noise_scheduler.timesteps
 
             # denoising loop
