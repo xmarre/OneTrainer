@@ -1,4 +1,5 @@
 # development
+.vs/
 .idea
 *.bak
 *.pyc
