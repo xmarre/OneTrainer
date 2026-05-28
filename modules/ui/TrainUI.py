@@ -581,6 +581,9 @@ class TrainUI(ctk.CTk):
         if self.model_tab:
             self.model_tab.refresh_ui()
 
+        if self.training_tab:
+            self.training_tab.refresh_ui()
+
         if training_method != TrainingMethod.LORA and "LoRA" in self.tabview._tab_dict:
             self.tabview.delete("LoRA")
             self.lora_tab = None

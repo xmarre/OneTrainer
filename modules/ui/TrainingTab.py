@@ -13,6 +13,7 @@ from modules.util.enum.LossScaler import LossScaler
 from modules.util.enum.LossWeight import LossWeight
 from modules.util.enum.Optimizer import Optimizer
 from modules.util.enum.TimestepDistribution import TimestepDistribution
+from modules.util.enum.TrainingMethod import TrainingMethod
 from modules.util.optimizer_util import change_optimizer
 from modules.util.ui import components
 from modules.util.ui.UIState import UIState
@@ -809,6 +810,29 @@ class TrainingTab:
                          tooltip="Selects the type of loss scaling to use during training. Functionally equated as: Loss * selection")
         components.options(frame, row, 1, [str(x) for x in list(LossScaler)], self.ui_state, "loss_scaler")
         row += 1
+
+        if self.train_config.training_method == TrainingMethod.LORA:
+            components.label(frame, row, 0, "Weight Noise",
+                             tooltip="Adds Gaussian noise directly to LoRA weights after each optimizer update.")
+            components.switch(frame, row, 1, self.ui_state, "weight_noise.enabled")
+            row += 1
+
+            components.label(frame, row, 0, "Weight Noise Mode",
+                             tooltip="relative scales sigma by each LoRA tensor's weight RMS; absolute uses a fixed sigma.")
+            components.options(frame, row, 1, ["relative", "absolute"], self.ui_state, "weight_noise.mode")
+            row += 1
+
+            components.label(frame, row, 0, "Weight Noise Sigma",
+                             tooltip="Noise scale. For relative mode this is multiplied by each LoRA tensor's weight RMS.")
+            components.entry(frame, row, 1, self.ui_state, "weight_noise.sigma",
+                             extra_validate=check_range(lower=0, message="Weight noise sigma must be non-negative"))
+            row += 1
+
+            components.label(frame, row, 0, "Weight Noise Log Every",
+                             tooltip="Step cadence for logging weight_noise_norm. 0 disables logging.")
+            components.entry(frame, row, 1, self.ui_state, "weight_noise.log_every",
+                             extra_validate=check_range(lower=0, message="Weight noise log interval must be non-negative"))
+            row += 1
 
         if not supports_perceptual_loss:
             self.ui_state.get_var("perceptual_loss.enabled").set(False)

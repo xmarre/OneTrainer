@@ -9,6 +9,7 @@ from modules.util.config.CloudConfig import CloudConfig
 from modules.util.config.ConceptConfig import ConceptConfig
 from modules.util.config.SampleConfig import SampleConfig
 from modules.util.config.PerceptualLossConfig import PerceptualLossConfig
+from modules.util.config.WeightNoiseConfig import WeightNoiseConfig
 from modules.util.config.SecretsConfig import SecretsConfig
 from modules.util.enum.AudioFormat import AudioFormat
 from modules.util.enum.ConfigPart import ConfigPart
@@ -427,6 +428,7 @@ class TrainConfig(BaseConfig):
     learning_rate_scaler: LearningRateScaler
     clip_grad_norm: float
     perceptual_loss: PerceptualLossConfig
+    weight_noise: WeightNoiseConfig
 
     #layer filter
     layer_filter: str  # comma-separated
@@ -1010,6 +1012,7 @@ class TrainConfig(BaseConfig):
         data.append(("learning_rate_scaler", LearningRateScaler.NONE, LearningRateScaler, False))
         data.append(("clip_grad_norm", 1.0, float, True))
         data.append(("perceptual_loss", PerceptualLossConfig.default_values(), PerceptualLossConfig, False))
+        data.append(("weight_noise", WeightNoiseConfig.default_values(), WeightNoiseConfig, False))
 
         # noise
         data.append(("offset_noise_weight", 0.0, float, False))

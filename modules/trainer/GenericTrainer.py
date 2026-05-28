@@ -1,5 +1,6 @@
 import contextlib
 import copy
+import hashlib
 import json
 import math
 import os
@@ -608,6 +609,70 @@ class GenericTrainer(BaseTrainer):
             torch.clear_autocast_cache()
             self.model.optimizer.eval()
 
+
+    @torch.no_grad()
+    def __inject_weight_noise(self, train_progress: TrainProgress) -> float | None:
+        """Inject Gaussian noise into LoRA optimizer groups after an update.
+
+        This mirrors ai-toolkit-perceptual's train.weight_noise block. It is
+        intentionally restricted to optimizer parameter groups whose name
+        contains "lora", so embeddings and full-finetune parameters are not
+        perturbed.
+        """
+        cfg = getattr(self.config, "weight_noise", None)
+        if cfg is None or not cfg.enabled or self.config.training_method != TrainingMethod.LORA:
+            return None
+
+        mode = cfg.mode.lower()
+        if mode not in ("absolute", "relative"):
+            raise ValueError(f"Unsupported weight_noise.mode: {cfg.mode!r}")
+
+        step = int(train_progress.global_step)
+        do_log = cfg.log_every > 0 and step % cfg.log_every == 0
+        noise_sq = 0.0
+        saw_lora_param = False
+
+        for group in self.model.optimizer.param_groups:
+            group_name = str(group.get("name", ""))
+            group_name_key = group_name.lower()
+            if "lora" not in group_name_key:
+                continue
+            group_seed = int.from_bytes(
+                hashlib.blake2s(group_name_key.encode("utf-8"), digest_size=8).digest(),
+                "little",
+            )
+
+            for param_index, param in enumerate(group.get("params", [])):
+                if not param.requires_grad or not param.is_floating_point():
+                    continue
+
+                weight = param.data
+                if mode == "absolute":
+                    sigma = float(cfg.sigma)
+                else:
+                    rms = float(weight.detach().float().pow(2).mean().sqrt().item())
+                    sigma = float(cfg.sigma) * rms
+
+                if sigma <= 0.0:
+                    continue
+
+                # Seed per parameter, not once per step, so identical model
+                # states remain identical across distributed ranks without
+                # perturbing the global training RNG stream.
+                generator = torch.Generator(device=weight.device)
+                seed = (0x574E0000 + step * 1000003 + group_seed + param_index) & ((1 << 63) - 1)
+                generator.manual_seed(seed)
+                noise = torch.randn(weight.shape, device=weight.device, dtype=weight.dtype, generator=generator) * sigma
+                weight.add_(noise)
+                saw_lora_param = True
+
+                if do_log:
+                    noise_sq += float(noise.detach().float().pow(2).sum().item())
+
+        if do_log and saw_lora_param:
+            return noise_sq ** 0.5
+        return None
+
     def train(self):
         train_device = torch.device(self.config.train_device)
 
@@ -820,6 +885,14 @@ class GenericTrainer(BaseTrainer):
                             self.model.ema.step(
                                 self.parameters,
                                 update_step
+                            )
+
+                        weight_noise_norm = self.__inject_weight_noise(train_progress)
+                        if weight_noise_norm is not None and multi.is_master():
+                            self.tensorboard.add_scalar(
+                                "weight_noise_norm/train_step",
+                                weight_noise_norm,
+                                train_progress.global_step,
                             )
 
                         self.one_step_trained = True
