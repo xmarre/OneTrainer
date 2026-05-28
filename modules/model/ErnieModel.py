@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import math
 from contextlib import nullcontext
 from random import Random
+from typing import TYPE_CHECKING, Any
 
 PROMPT_MAX_LENGTH = 512
 HIDDEN_STATES_LAYER = -2
@@ -13,13 +16,17 @@ from modules.util.LayerOffloadConductor import LayerOffloadConductor
 import torch
 from torch import Tensor
 
-from diffusers import (
-    AutoencoderKLFlux2,
-    DiffusionPipeline,
-    ErnieImageTransformer2DModel,
-    FlowMatchEulerDiscreteScheduler,
-)
-from transformers import AutoTokenizer, Mistral3Model
+from diffusers import DiffusionPipeline
+from transformers import AutoTokenizer
+
+if TYPE_CHECKING:
+    from diffusers import AutoencoderKLFlux2, ErnieImageTransformer2DModel, FlowMatchEulerDiscreteScheduler
+    from transformers import Mistral3Model
+else:
+    AutoencoderKLFlux2 = Any
+    ErnieImageTransformer2DModel = Any
+    FlowMatchEulerDiscreteScheduler = Any
+    Mistral3Model = Any
 
 
 class _ErnieImagePipelineFallback(DiffusionPipeline):

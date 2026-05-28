@@ -16,14 +16,35 @@ from modules.util.ModelWeightDtypes import ModelWeightDtypes
 
 import torch
 
-from diffusers import (
-    AutoencoderKLFlux2,
-    ErnieImageTransformer2DModel,
-    FlowMatchEulerDiscreteScheduler,
-    GGUFQuantizationConfig,
-)
-from transformers import Mistral3Model, MistralConfig, PreTrainedTokenizerFast
+from diffusers import GGUFQuantizationConfig
+from transformers import MistralConfig, PreTrainedTokenizerFast
 from transformers.models.auto.configuration_auto import CONFIG_MAPPING
+
+
+def _import_ernie_diffusers_classes():
+    try:
+        from diffusers import AutoencoderKLFlux2, ErnieImageTransformer2DModel, FlowMatchEulerDiscreteScheduler
+    except ImportError as e:
+        raise ImportError(
+            "ERNIE-Image support requires a diffusers build that exposes "
+            "AutoencoderKLFlux2, ErnieImageTransformer2DModel and "
+            "FlowMatchEulerDiscreteScheduler. Update the OneTrainer diffusers "
+            "editable checkout before loading an ERNIE model."
+        ) from e
+
+    return AutoencoderKLFlux2, ErnieImageTransformer2DModel, FlowMatchEulerDiscreteScheduler
+
+
+def _import_ernie_transformers_classes():
+    try:
+        from transformers import Mistral3Model
+    except ImportError as e:
+        raise ImportError(
+            "ERNIE-Image support requires a transformers build that exposes Mistral3Model. "
+            "Update transformers before loading an ERNIE model."
+        ) from e
+
+    return Mistral3Model
 
 
 class ErnieModelLoader(
@@ -60,6 +81,9 @@ class ErnieModelLoader(
             vae_model_name: str,
             quantization: QuantizationConfig,
     ):
+        AutoencoderKLFlux2, ErnieImageTransformer2DModel, FlowMatchEulerDiscreteScheduler = _import_ernie_diffusers_classes()
+        Mistral3Model = _import_ernie_transformers_classes()
+
         # transformers < 5.x doesn't register "ministral3"; patch it so Mistral3Config can parse its text_config
         if "ministral3" not in CONFIG_MAPPING:
             CONFIG_MAPPING.register("ministral3", MistralConfig)
