@@ -834,6 +834,40 @@ class TrainingTab:
                              extra_validate=check_range(lower=0, message="Weight noise log interval must be non-negative"))
             row += 1
 
+            components.label(frame, row, 0, "Gradient Noise",
+                             tooltip="Adds Gaussian noise to LoRA gradients after clipping and before each optimizer update.")
+            components.switch(frame, row, 1, self.ui_state, "gradient_noise.enabled")
+            row += 1
+
+            components.label(frame, row, 0, "Gradient Noise Mode",
+                             tooltip="neelakantan uses annealed eta/(1+step)^gamma; relative scales sigma by grad RMS; absolute uses fixed sigma.")
+            components.options(frame, row, 1, ["neelakantan", "relative", "absolute"], self.ui_state, "gradient_noise.mode")
+            row += 1
+
+            components.label(frame, row, 0, "Gradient Noise Sigma",
+                             tooltip="Noise scale for absolute and relative modes.")
+            components.entry(frame, row, 1, self.ui_state, "gradient_noise.sigma",
+                             extra_validate=check_range(lower=0, message="Gradient noise sigma must be non-negative"))
+            row += 1
+
+            components.label(frame, row, 0, "Gradient Noise Eta",
+                             tooltip="Initial noise scale for neelakantan mode.")
+            components.entry(frame, row, 1, self.ui_state, "gradient_noise.eta",
+                             extra_validate=check_range(lower=0, message="Gradient noise eta must be non-negative"))
+            row += 1
+
+            components.label(frame, row, 0, "Gradient Noise Gamma",
+                             tooltip="Anneal exponent for neelakantan mode.")
+            components.entry(frame, row, 1, self.ui_state, "gradient_noise.gamma",
+                             extra_validate=check_range(lower=0, message="Gradient noise gamma must be non-negative"))
+            row += 1
+
+            components.label(frame, row, 0, "Gradient Noise Log Every",
+                             tooltip="Step cadence for logging grad/noise_norm and grad/noise_snr. 0 disables logging.")
+            components.entry(frame, row, 1, self.ui_state, "gradient_noise.log_every",
+                             extra_validate=check_range(lower=0, message="Gradient noise log interval must be non-negative"))
+            row += 1
+
         if not supports_perceptual_loss:
             self.ui_state.get_var("perceptual_loss.enabled").set(False)
             return
@@ -870,6 +904,11 @@ class TrainingTab:
         components.label(frame, row, 0, "Perceptual Loss",
                          tooltip="Adds optional x0-decoded auxiliary losses. Requires a VAE-decodable image latent path.")
         components.switch(frame, row, 1, self.ui_state, "perceptual_loss.enabled")
+        row += 1
+
+        components.label(frame, row, 0, "Loss Split",
+                         tooltip="off sums diffusion and perceptual losses; diffusion_depth alternates diffusion-only and perceptual-only optimizer steps.")
+        components.options(frame, row, 1, ["off", "diffusion_depth"], self.ui_state, "loss_split")
         row += 1
 
         components.label(frame, row, 0, "Perceptual Min T",

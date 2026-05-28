@@ -8,6 +8,7 @@ from modules.util.config.BaseConfig import BaseConfig
 from modules.util.config.CloudConfig import CloudConfig
 from modules.util.config.ConceptConfig import ConceptConfig
 from modules.util.config.SampleConfig import SampleConfig
+from modules.util.config.GradientNoiseConfig import GradientNoiseConfig
 from modules.util.config.PerceptualLossConfig import PerceptualLossConfig
 from modules.util.config.WeightNoiseConfig import WeightNoiseConfig
 from modules.util.config.SecretsConfig import SecretsConfig
@@ -427,8 +428,10 @@ class TrainConfig(BaseConfig):
     loss_scaler: LossScaler
     learning_rate_scaler: LearningRateScaler
     clip_grad_norm: float
+    loss_split: str
     perceptual_loss: PerceptualLossConfig
     weight_noise: WeightNoiseConfig
+    gradient_noise: GradientNoiseConfig
 
     #layer filter
     layer_filter: str  # comma-separated
@@ -1011,8 +1014,13 @@ class TrainConfig(BaseConfig):
         data.append(("loss_scaler", LossScaler.NONE, LossScaler, False))
         data.append(("learning_rate_scaler", LearningRateScaler.NONE, LearningRateScaler, False))
         data.append(("clip_grad_norm", 1.0, float, True))
+        # Global loss-split mode for perceptual depth anchoring. "off" preserves
+        # OneTrainer's existing summed loss; "diffusion_depth" alternates
+        # diffusion-only and perceptual-only optimizer steps.
+        data.append(("loss_split", "off", str, False))
         data.append(("perceptual_loss", PerceptualLossConfig.default_values(), PerceptualLossConfig, False))
         data.append(("weight_noise", WeightNoiseConfig.default_values(), WeightNoiseConfig, False))
+        data.append(("gradient_noise", GradientNoiseConfig.default_values(), GradientNoiseConfig, False))
 
         # noise
         data.append(("offset_noise_weight", 0.0, float, False))
