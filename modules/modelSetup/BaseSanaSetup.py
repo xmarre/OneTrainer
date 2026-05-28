@@ -9,6 +9,7 @@ from modules.modelSetup.mixin.ModelSetupDiffusionLossMixin import ModelSetupDiff
 from modules.modelSetup.mixin.ModelSetupEmbeddingMixin import ModelSetupEmbeddingMixin
 from modules.modelSetup.mixin.ModelSetupFlowMatchingMixin import ModelSetupFlowMatchingMixin
 from modules.modelSetup.mixin.ModelSetupNoiseMixin import ModelSetupNoiseMixin
+from modules.modelSetup.mixin.ModelSetupPerceptualLossMixin import ModelSetupPerceptualLossMixin
 from modules.modelSetup.mixin.ModelSetupText2ImageMixin import ModelSetupText2ImageMixin
 from modules.module.AdditionalEmbeddingWrapper import AdditionalEmbeddingWrapper
 from modules.util.checkpointing_util import (
@@ -29,6 +30,7 @@ from torch import Tensor
 class BaseSanaSetup(
     BaseModelSetup,
     ModelSetupDiffusionLossMixin,
+    ModelSetupPerceptualLossMixin,
     ModelSetupDebugMixin,
     ModelSetupNoiseMixin,
     ModelSetupFlowMatchingMixin,
@@ -227,16 +229,18 @@ class BaseSanaSetup(
             ).sample
 
             flow = latent_noise - scaled_latent_image
+            predicted_scaled_latent_image = scaled_noisy_latent_image - predicted_flow * sigma
             model_output_data = {
                 'loss_type': 'target',
                 'timestep': timestep,
                 'predicted': predicted_flow,
                 'target': flow,
+                'perceptual_predicted_latent_image': predicted_scaled_latent_image / vae_scaling_factor,
+                'perceptual_target_latent_image': latent_image,
             }
 
             if self.debug_mode:
                 with torch.no_grad():
-                    predicted_scaled_latent_image = scaled_noisy_latent_image - predicted_flow * sigma
                     self._save_tokens("7-prompt", batch['tokens'], model.tokenizer, config, train_progress)
                     self._save_latent("1-noise", latent_noise, config, train_progress)
                     self._save_latent("2-noisy_image", scaled_noisy_latent_image, config, train_progress)
@@ -254,13 +258,23 @@ class BaseSanaSetup(
             data: dict,
             config: TrainConfig,
     ) -> Tensor:
-        return self._diffusion_losses(
+        loss = self._diffusion_losses(
             batch=batch,
             data=data,
             config=config,
             train_device=self.train_device,
             betas=model.noise_scheduler.betas,
         ).mean()
+        return self._add_perceptual_loss(
+            model=model,
+            batch=batch,
+            data=data,
+            config=config,
+            base_loss=loss,
+            predicted_latent_image=data.get('perceptual_predicted_latent_image'),
+            target_latent_image=data.get('perceptual_target_latent_image'),
+            num_train_timesteps=model.noise_scheduler.config['num_train_timesteps'],
+        )
 
     def prepare_text_caching(self, model: SanaModel, config: TrainConfig):
         model.to(self.temp_device)

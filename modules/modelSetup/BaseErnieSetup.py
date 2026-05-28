@@ -9,6 +9,7 @@ from modules.modelSetup.mixin.ModelSetupDiffusionLossMixin import ModelSetupDiff
 from modules.modelSetup.mixin.ModelSetupEmbeddingMixin import ModelSetupEmbeddingMixin
 from modules.modelSetup.mixin.ModelSetupFlowMatchingMixin import ModelSetupFlowMatchingMixin
 from modules.modelSetup.mixin.ModelSetupNoiseMixin import ModelSetupNoiseMixin
+from modules.modelSetup.mixin.ModelSetupPerceptualLossMixin import ModelSetupPerceptualLossMixin
 from modules.util.checkpointing_util import enable_checkpointing_for_ernie_transformer
 from modules.util.config.TrainConfig import TrainConfig
 from modules.util.dtype_util import create_autocast_context, disable_fp16_autocast_context
@@ -24,6 +25,7 @@ from torch import Tensor
 class BaseErnieSetup(
     BaseModelSetup,
     ModelSetupDiffusionLossMixin,
+    ModelSetupPerceptualLossMixin,
     ModelSetupDebugMixin,
     ModelSetupNoiseMixin,
     ModelSetupFlowMatchingMixin,
@@ -128,17 +130,21 @@ class BaseErnieSetup(
             )[0]
 
             flow = latent_noise - scaled_latent_image
+            predicted_scaled_latent_image = scaled_noisy_latent_image - predicted_flow * sigma
             model_output_data = {
                 'loss_type': 'target',
                 'timestep': timestep,
                 # unpatchify to match mask shape for masked training
                 'predicted': model.unpatchify_latents(predicted_flow),
                 'target': model.unpatchify_latents(flow),
+                'perceptual_predicted_latent_image': model.unpatchify_latents(
+                    model.unscale_latents(predicted_scaled_latent_image)
+                ),
+                'perceptual_target_latent_image': batch['latent_image'],
             }
 
             if config.debug_mode:
                 with torch.no_grad():
-                    predicted_scaled_latent_image = scaled_noisy_latent_image - predicted_flow * sigma
                     self._save_tokens('7-prompt', batch['tokens'], model.tokenizer, config, train_progress)
                     self._save_latent('1-noise', latent_noise, config, train_progress)
                     self._save_latent('2-noisy_image', scaled_noisy_latent_image, config, train_progress)
@@ -156,13 +162,23 @@ class BaseErnieSetup(
             data: dict,
             config: TrainConfig,
     ) -> Tensor:
-        return self._flow_matching_losses(
+        loss = self._flow_matching_losses(
             batch=batch,
             data=data,
             config=config,
             train_device=self.train_device,
             sigmas=model.noise_scheduler.sigmas,
         ).mean()
+        return self._add_perceptual_loss(
+            model=model,
+            batch=batch,
+            data=data,
+            config=config,
+            base_loss=loss,
+            predicted_latent_image=data.get('perceptual_predicted_latent_image'),
+            target_latent_image=data.get('perceptual_target_latent_image'),
+            num_train_timesteps=model.noise_scheduler.config['num_train_timesteps'],
+        )
 
     def prepare_text_caching(self, model: ErnieModel, config: TrainConfig):
         model.to(self.temp_device)

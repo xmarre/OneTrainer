@@ -9,6 +9,7 @@ from modules.modelSetup.mixin.ModelSetupDiffusionLossMixin import ModelSetupDiff
 from modules.modelSetup.mixin.ModelSetupDiffusionMixin import ModelSetupDiffusionMixin
 from modules.modelSetup.mixin.ModelSetupEmbeddingMixin import ModelSetupEmbeddingMixin
 from modules.modelSetup.mixin.ModelSetupNoiseMixin import ModelSetupNoiseMixin
+from modules.modelSetup.mixin.ModelSetupPerceptualLossMixin import ModelSetupPerceptualLossMixin
 from modules.modelSetup.mixin.ModelSetupText2ImageMixin import ModelSetupText2ImageMixin
 from modules.module.AdditionalEmbeddingWrapper import AdditionalEmbeddingWrapper
 from modules.util.checkpointing_util import (
@@ -30,6 +31,7 @@ from torch import Tensor
 class BaseStableDiffusionXLSetup(
     BaseModelSetup,
     ModelSetupDiffusionLossMixin,
+    ModelSetupPerceptualLossMixin,
     ModelSetupDebugMixin,
     ModelSetupNoiseMixin,
     ModelSetupDiffusionMixin,
@@ -305,6 +307,24 @@ class BaseStableDiffusionXLSetup(
                     'target': target_velocity,
                 }
 
+            alphas_cumprod = model.noise_scheduler.alphas_cumprod.to(
+                device=scaled_noisy_latent_image.device,
+                dtype=scaled_noisy_latent_image.dtype,
+            )
+            sqrt_alpha_prod = alphas_cumprod[timestep].flatten().reshape(-1, 1, 1, 1) ** 0.5
+            sqrt_one_minus_alpha_prod = (1 - alphas_cumprod[timestep]).flatten().reshape(-1, 1, 1, 1) ** 0.5
+            if model.noise_scheduler.config.prediction_type == 'v_prediction':
+                scaled_predicted_latent_image = (
+                    sqrt_alpha_prod * scaled_noisy_latent_image
+                    - sqrt_one_minus_alpha_prod * predicted_latent_noise
+                )
+            else:
+                scaled_predicted_latent_image = (
+                    scaled_noisy_latent_image - predicted_latent_noise * sqrt_one_minus_alpha_prod
+                ) / sqrt_alpha_prod.clamp_min(1e-8)
+            model_output_data['perceptual_predicted_latent_image'] = scaled_predicted_latent_image / vae_scaling_factor
+            model_output_data['perceptual_target_latent_image'] = latent_image
+
             if config.debug_mode:
                 with torch.no_grad():
                     self._save_text(
@@ -342,18 +362,8 @@ class BaseStableDiffusionXLSetup(
                     )
 
                     # predicted image
-                    alphas_cumprod = model.noise_scheduler.alphas_cumprod.to(config.train_device)
-                    sqrt_alpha_prod = alphas_cumprod[timestep] ** 0.5
-                    sqrt_alpha_prod = sqrt_alpha_prod.flatten().reshape(-1, 1, 1, 1)
-
-                    sqrt_one_minus_alpha_prod = (1 - alphas_cumprod[timestep]) ** 0.5
-                    sqrt_one_minus_alpha_prod = sqrt_one_minus_alpha_prod.flatten().reshape(-1, 1, 1, 1)
-
-                    scaled_predicted_latent_image = \
-                        (scaled_noisy_latent_image - predicted_latent_noise * sqrt_one_minus_alpha_prod) \
-                        / sqrt_alpha_prod
                     self._save_image(
-                        self._project_latent_to_image_sdxl(scaled_predicted_latent_image),
+                        self._project_latent_to_image_sdxl(model_output_data['perceptual_predicted_latent_image'] * vae_scaling_factor),
                         config.debug_dir + "/training_batches",
                         "4-predicted_image",
                         model.train_progress.global_step,
@@ -379,13 +389,23 @@ class BaseStableDiffusionXLSetup(
             data: dict,
             config: TrainConfig,
     ) -> Tensor:
-        return self._diffusion_losses(
+        loss = self._diffusion_losses(
             batch=batch,
             data=data,
             config=config,
             train_device=self.train_device,
             betas=model.noise_scheduler.betas,
         ).mean()
+        return self._add_perceptual_loss(
+            model=model,
+            batch=batch,
+            data=data,
+            config=config,
+            base_loss=loss,
+            predicted_latent_image=data.get('perceptual_predicted_latent_image'),
+            target_latent_image=data.get('perceptual_target_latent_image'),
+            num_train_timesteps=model.noise_scheduler.config['num_train_timesteps'],
+        )
 
     def prepare_text_caching(self, model: StableDiffusionXLModel, config: TrainConfig):
         model.to(self.temp_device)

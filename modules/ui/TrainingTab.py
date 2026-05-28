@@ -804,6 +804,98 @@ class TrainingTab:
         components.options(frame, row, 1, [str(x) for x in list(LossScaler)], self.ui_state, "loss_scaler")
         row += 1
 
+        components.label(frame, row, 0, "Perceptual Loss",
+                         tooltip="Adds optional x0-decoded auxiliary losses. Requires a VAE-decodable image latent path; video models and Wuerstchen are ignored by the setup hook.")
+        components.switch(frame, row, 1, self.ui_state, "perceptual_loss.enabled")
+        row += 1
+
+        components.label(frame, row, 0, "Perceptual Min T",
+                         tooltip="Lowest normalized timestep ratio for perceptual loss. 0.0 means no lower gate.")
+        components.entry(frame, row, 1, self.ui_state, "perceptual_loss.min_t",
+                         extra_validate=check_range(lower=0, upper=1, message="Perceptual Min T must be between 0 and 1"))
+        row += 1
+
+        components.label(frame, row, 0, "Perceptual Max T",
+                         tooltip="Highest normalized timestep ratio for perceptual loss. 1.0 means no upper gate.")
+        components.entry(frame, row, 1, self.ui_state, "perceptual_loss.max_t",
+                         extra_validate=check_range(lower=0, upper=1, message="Perceptual Max T must be between 0 and 1"))
+        row += 1
+
+        components.label(frame, row, 0, "Decoded L1 Weight",
+                         tooltip="Weight for pixel-space L1 between decoded x0 prediction and decoded target latents.")
+        components.entry(frame, row, 1, self.ui_state, "perceptual_loss.decoded_l1_weight",
+                         extra_validate=check_range(lower=0, message="Decoded L1 weight must be non-negative"))
+        row += 1
+
+        components.label(frame, row, 0, "Decoded MSE Weight",
+                         tooltip="Weight for pixel-space MSE between decoded x0 prediction and decoded target latents.")
+        components.entry(frame, row, 1, self.ui_state, "perceptual_loss.decoded_mse_weight",
+                         extra_validate=check_range(lower=0, message="Decoded MSE weight must be non-negative"))
+        row += 1
+
+        components.label(frame, row, 0, "Edge Weight",
+                         tooltip="Weight for Sobel edge L1 between decoded x0 prediction and decoded target latents.")
+        components.entry(frame, row, 1, self.ui_state, "perceptual_loss.edge_weight",
+                         extra_validate=check_range(lower=0, message="Edge weight must be non-negative"))
+        row += 1
+
+        components.label(frame, row, 0, "Depth Weight",
+                         tooltip="Weight for Depth-Anything-V2 scale/shift-invariant depth consistency.")
+        components.entry(frame, row, 1, self.ui_state, "perceptual_loss.depth_weight",
+                         extra_validate=check_range(lower=0, message="Depth weight must be non-negative"))
+        row += 1
+
+        components.label(frame, row, 0, "Depth Model ID",
+                         tooltip="Hugging Face model id for the frozen Depth-Anything perceptor.")
+        components.entry(frame, row, 1, self.ui_state, "perceptual_loss.depth_model_id")
+        row += 1
+
+        components.label(frame, row, 0, "Depth Input Size",
+                         tooltip="Long-side input size for Depth-Anything. Must be divisible enough for the model's internal patching.")
+        components.entry(frame, row, 1, self.ui_state, "perceptual_loss.depth_input_size",
+                         extra_validate=check_range(lower=14, message="Depth input size must be at least 14"))
+        row += 1
+
+        components.label(frame, row, 0, "Depth DType",
+                         tooltip="DType used for the frozen depth perceptor.")
+        components.options(frame, row, 1, ["float32", "bfloat16", "float16"], self.ui_state, "perceptual_loss.depth_dtype")
+        row += 1
+
+        components.label(frame, row, 0, "Depth Grad Checkpoint",
+                         tooltip="Enables gradient checkpointing on the frozen depth perceptor to reduce VRAM.")
+        components.switch(frame, row, 1, self.ui_state, "perceptual_loss.depth_grad_checkpoint")
+        row += 1
+
+        components.label(frame, row, 0, "Depth SSI Weight",
+                         tooltip="Scale/shift-invariant L1 component weight inside the depth loss.")
+        components.entry(frame, row, 1, self.ui_state, "perceptual_loss.depth_ssi_weight",
+                         extra_validate=check_range(lower=0, message="Depth SSI weight must be non-negative"))
+        row += 1
+
+        components.label(frame, row, 0, "Depth Grad Weight",
+                         tooltip="Multi-scale depth-gradient component weight inside the depth loss.")
+        components.entry(frame, row, 1, self.ui_state, "perceptual_loss.depth_grad_weight",
+                         extra_validate=check_range(lower=0, message="Depth grad weight must be non-negative"))
+        row += 1
+
+        components.label(frame, row, 0, "Depth Grad Scales",
+                         tooltip="Number of scales used by the multi-scale depth-gradient loss.")
+        components.entry(frame, row, 1, self.ui_state, "perceptual_loss.depth_grad_scales",
+                         extra_validate=check_range(lower=1, message="Depth grad scales must be at least 1"))
+        row += 1
+
+        components.label(frame, row, 0, "Depth Pixel Blur Sigma",
+                         tooltip="Optional Gaussian blur applied before depth estimation. 0 disables it.")
+        components.entry(frame, row, 1, self.ui_state, "perceptual_loss.depth_pixel_blur_sigma",
+                         extra_validate=check_range(lower=0, message="Depth pixel blur sigma must be non-negative"))
+        row += 1
+
+        components.label(frame, row, 0, "VAE Decode Chunk Size",
+                         tooltip="Batch chunk size used for differentiable VAE decode in the perceptual path. Lower values reduce peak VRAM.")
+        components.entry(frame, row, 1, self.ui_state, "perceptual_loss.decode_chunk_size",
+                         extra_validate=check_range(lower=1, message="VAE decode chunk size must be at least 1"))
+        row += 1
+
     def __create_layer_frame(self, master, row):
         cls = create.get_model_setup_class(self.train_config.model_type, self.train_config.training_method)
         presets = cls.LAYER_PRESETS if cls is not None else {"full": []}

@@ -9,6 +9,7 @@ from modules.modelSetup.mixin.ModelSetupDiffusionLossMixin import ModelSetupDiff
 from modules.modelSetup.mixin.ModelSetupEmbeddingMixin import ModelSetupEmbeddingMixin
 from modules.modelSetup.mixin.ModelSetupFlowMatchingMixin import ModelSetupFlowMatchingMixin
 from modules.modelSetup.mixin.ModelSetupNoiseMixin import ModelSetupNoiseMixin
+from modules.modelSetup.mixin.ModelSetupPerceptualLossMixin import ModelSetupPerceptualLossMixin
 from modules.modelSetup.mixin.ModelSetupText2ImageMixin import ModelSetupText2ImageMixin
 from modules.module.AdditionalEmbeddingWrapper import AdditionalEmbeddingWrapper
 from modules.util.checkpointing_util import (
@@ -30,6 +31,7 @@ from torch import Tensor
 class BaseFluxSetup(
     BaseModelSetup,
     ModelSetupDiffusionLossMixin,
+    ModelSetupPerceptualLossMixin,
     ModelSetupDebugMixin,
     ModelSetupNoiseMixin,
     ModelSetupFlowMatchingMixin,
@@ -303,16 +305,18 @@ class BaseFluxSetup(
             )
 
             flow = latent_noise - scaled_latent_image
+            predicted_scaled_latent_image = scaled_noisy_latent_image - predicted_flow * sigma
             model_output_data = {
                 'loss_type': 'target',
                 'timestep': timestep,
                 'predicted': predicted_flow,
                 'target': flow,
+                'perceptual_predicted_latent_image': predicted_scaled_latent_image / vae_scaling_factor + vae_shift_factor,
+                'perceptual_target_latent_image': latent_image,
             }
 
             if config.debug_mode:
                 with torch.no_grad():
-                    predicted_scaled_latent_image = scaled_noisy_latent_image - predicted_flow * sigma
                     self._save_tokens("7-prompt", batch['tokens_1'], model.tokenizer_1, config, train_progress)
                     self._save_latent("1-noise", latent_noise, config, train_progress)
                     self._save_latent("2-noisy_image", scaled_noisy_latent_image, config, train_progress)
@@ -330,13 +334,23 @@ class BaseFluxSetup(
             data: dict,
             config: TrainConfig,
     ) -> Tensor:
-        return self._flow_matching_losses(
+        loss = self._flow_matching_losses(
             batch=batch,
             data=data,
             config=config,
             train_device=self.train_device,
             sigmas=model.noise_scheduler.sigmas,
         ).mean()
+        return self._add_perceptual_loss(
+            model=model,
+            batch=batch,
+            data=data,
+            config=config,
+            base_loss=loss,
+            predicted_latent_image=data.get('perceptual_predicted_latent_image'),
+            target_latent_image=data.get('perceptual_target_latent_image'),
+            num_train_timesteps=model.noise_scheduler.config['num_train_timesteps'],
+        )
 
     def prepare_text_caching(self, model: FluxModel, config: TrainConfig):
         model.to(self.temp_device)
