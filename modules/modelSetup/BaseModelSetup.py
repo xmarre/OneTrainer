@@ -139,6 +139,19 @@ class BaseModelSetup(
             if stats:
                 tensorboard.add_scalar("kourkoutas/beta2_mean", stats['mean'], model.train_progress.global_step)
 
+        for attr, tag in (
+            ("_last_perceptual_loss", "loss/perceptual"),
+            ("_last_perceptual_decoded_l1_loss", "loss/perceptual_decoded_l1"),
+            ("_last_perceptual_decoded_mse_loss", "loss/perceptual_decoded_mse"),
+            ("_last_perceptual_edge_loss", "loss/perceptual_edge"),
+            ("_last_perceptual_depth_loss", "loss/perceptual_depth"),
+            ("_last_perceptual_depth_ssi", "loss/perceptual_depth_ssi"),
+            ("_last_perceptual_depth_grad", "loss/perceptual_depth_grad"),
+        ):
+            value = getattr(self, attr, None)
+            if value is not None:
+                tensorboard.add_scalar(tag, value, model.train_progress.global_step)
+
     def stop_embedding_training_elapsed(
             self,
             config: TrainEmbeddingConfig,
