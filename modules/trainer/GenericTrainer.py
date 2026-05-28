@@ -610,6 +610,124 @@ class GenericTrainer(BaseTrainer):
             self.model.optimizer.eval()
 
 
+    def __gradient_noise_enabled(self) -> bool:
+        cfg = getattr(self.config, "gradient_noise", None)
+        return bool(cfg is not None and cfg.enabled and self.config.training_method == TrainingMethod.LORA)
+
+    def __optimizer_step_index(self, train_progress: TrainProgress) -> int:
+        # TrainProgress.global_step advances per micro-batch; update steps fire
+        # on (global_step + 1) % accumulation_steps == 0.
+        accumulation_steps = max(1, int(self.config.gradient_accumulation_steps))
+        return int(train_progress.global_step) // accumulation_steps
+
+    def __iter_lora_optimizer_params(self, *, require_grad: bool = False):
+        optimizer = getattr(self.model, "optimizer", None)
+        if optimizer is None:
+            return
+
+        for group in optimizer.param_groups:
+            group_name = str(group.get("name", ""))
+            group_name_key = group_name.lower()
+            if "lora" not in group_name_key:
+                continue
+
+            group_seed = int.from_bytes(
+                hashlib.blake2s(group_name_key.encode("utf-8"), digest_size=8).digest(),
+                "little",
+            )
+            for param_index, param in enumerate(group.get("params", [])):
+                if not param.requires_grad or not param.is_floating_point():
+                    continue
+                if require_grad and param.grad is None:
+                    continue
+                yield group_seed, param_index, param
+
+    @torch.no_grad()
+    def __inject_gradient_noise(self, train_progress: TrainProgress) -> tuple[float, float] | None:
+        """Inject Gaussian noise into LoRA gradients before optimizer.step().
+
+        This mirrors ai-toolkit-perceptual's train.gradient_noise block. The
+        injector runs after clipping so clipping does not remove the intended
+        noise, and it is restricted to LoRA optimizer groups.
+        """
+        cfg = getattr(self.config, "gradient_noise", None)
+        if cfg is None or not cfg.enabled or self.config.training_method != TrainingMethod.LORA:
+            return None
+
+        if self.config.optimizer.optimizer.supports_fused_back_pass() and self.config.optimizer.fused_back_pass:
+            raise RuntimeError(
+                "gradient_noise cannot be used with fused back pass in this port; "
+                "disable fused back pass or disable gradient_noise."
+            )
+
+        mode = cfg.mode.lower()
+        if mode not in ("absolute", "relative", "neelakantan"):
+            raise ValueError(f"Unsupported gradient_noise.mode: {cfg.mode!r}")
+
+        step = self.__optimizer_step_index(train_progress)
+        do_log = cfg.log_every > 0 and step % cfg.log_every == 0
+        grad_sq = 0.0
+        noise_sq = 0.0
+        saw_lora_grad = False
+
+        for group_seed, param_index, param in self.__iter_lora_optimizer_params(require_grad=True):
+            grad = param.grad
+            if grad is None:
+                continue
+
+            if mode == "absolute":
+                sigma = float(cfg.sigma)
+            elif mode == "relative":
+                rms = float(grad.detach().float().pow(2).mean().sqrt().item())
+                sigma = float(cfg.sigma) * rms
+            else:
+                sigma = float(cfg.eta) / max(1.0, (1.0 + step) ** float(cfg.gamma))
+
+            if sigma <= 0.0:
+                continue
+
+            generator = torch.Generator(device=grad.device)
+            seed = (0x474E0000 + step * 1000003 + group_seed + param_index) & ((1 << 63) - 1)
+            generator.manual_seed(seed)
+            noise = torch.randn(grad.shape, device=grad.device, dtype=grad.dtype, generator=generator) * sigma
+
+            if do_log:
+                grad_sq += float(grad.detach().float().pow(2).sum().item())
+                noise_sq += float(noise.detach().float().pow(2).sum().item())
+
+            grad.add_(noise)
+            saw_lora_grad = True
+
+        if do_log and saw_lora_grad:
+            noise_norm = noise_sq ** 0.5
+            grad_noise_snr = (grad_sq ** 0.5) / noise_norm if noise_norm > 1e-12 else 0.0
+            return noise_norm, grad_noise_snr
+        return None
+
+    @torch.no_grad()
+    def __record_lora_fisher_trace(self) -> float | None:
+        """Return Adam exp_avg_sq sum over LoRA groups as a Fisher-trace proxy."""
+        if self.config.training_method != TrainingMethod.LORA:
+            return None
+
+        optimizer = getattr(self.model, "optimizer", None)
+        if optimizer is None:
+            return None
+
+        total = 0.0
+        saw_state = False
+        for _, _, param in self.__iter_lora_optimizer_params(require_grad=False):
+            state = optimizer.state.get(param)
+            if not state:
+                continue
+            exp_avg_sq = state.get("exp_avg_sq")
+            if exp_avg_sq is None:
+                continue
+            total += float(exp_avg_sq.detach().float().sum().item())
+            saw_state = True
+
+        return total if saw_state else None
+
     @torch.no_grad()
     def __inject_weight_noise(self, train_progress: TrainProgress) -> float | None:
         """Inject Gaussian noise into LoRA optimizer groups after an update.
@@ -833,18 +951,26 @@ class GenericTrainer(BaseTrainer):
                         else:
                             multi.reduce_grads_mean(self.parameters, self.config.gradient_reduce_precision)
 
+                        gradient_noise_metrics = None
                         if scaler and self.config.optimizer.optimizer.supports_fused_back_pass() and self.config.optimizer.fused_back_pass:
+                            if self.__gradient_noise_enabled():
+                                raise RuntimeError(
+                                    "gradient_noise cannot be used with fused back pass in this port; "
+                                    "disable fused back pass or disable gradient_noise."
+                                )
                             scaler.step_after_unscale_parameter_(self.model.optimizer)
                             scaler.update()
                         elif scaler:
                             scaler.unscale_(self.model.optimizer)
                             if self.config.clip_grad_norm is not None:
                                 nn.utils.clip_grad_norm_(self.parameters, self.config.clip_grad_norm)
+                            gradient_noise_metrics = self.__inject_gradient_noise(train_progress)
                             scaler.step(self.model.optimizer)
                             scaler.update()
                         else:
                             if self.config.clip_grad_norm is not None:
                                 nn.utils.clip_grad_norm_(self.parameters, self.config.clip_grad_norm)
+                            gradient_noise_metrics = self.__inject_gradient_noise(train_progress)
                             self.model.optimizer.step()
 
                         lr_scheduler.step()  # done before zero_grad, because some lr schedulers need gradients
@@ -870,6 +996,18 @@ class GenericTrainer(BaseTrainer):
                                 'smooth loss': ema_loss,
                             })
                             self.tensorboard.add_scalar("smooth_loss/train_step", ema_loss, train_progress.global_step)
+                            if gradient_noise_metrics is not None:
+                                grad_noise_norm, grad_noise_snr = gradient_noise_metrics
+                                self.tensorboard.add_scalar(
+                                    "grad/noise_norm/train_step",
+                                    grad_noise_norm,
+                                    train_progress.global_step,
+                                )
+                                self.tensorboard.add_scalar(
+                                    "grad/noise_snr/train_step",
+                                    grad_noise_snr,
+                                    train_progress.global_step,
+                                )
 
                         accumulated_loss = 0.0
                         self.model_setup.after_optimizer_step(self.model, self.config, train_progress)
@@ -885,6 +1023,14 @@ class GenericTrainer(BaseTrainer):
                             self.model.ema.step(
                                 self.parameters,
                                 update_step
+                            )
+
+                        fisher_trace = self.__record_lora_fisher_trace()
+                        if fisher_trace is not None and multi.is_master():
+                            self.tensorboard.add_scalar(
+                                "grad/fisher/train_step",
+                                fisher_trace,
+                                train_progress.global_step,
                             )
 
                         weight_noise_norm = self.__inject_weight_noise(train_progress)

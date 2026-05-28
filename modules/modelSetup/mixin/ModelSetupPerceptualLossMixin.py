@@ -145,6 +145,23 @@ class ModelSetupPerceptualLossMixin:
         gy = F.conv2d(gray, ky)
         return torch.sqrt(gx * gx + gy * gy + 1e-12)
 
+    def _perceptual_loss_split_mode(self, config: TrainConfig) -> str:
+        mode = str(getattr(config, "loss_split", "off") or "off").lower().strip()
+        if mode in {"", "off", "sum", "none", "disabled", "false"}:
+            return "off"
+        if mode in {"diffusion_depth", "depth", "alternating"}:
+            return "diffusion_depth"
+        raise ValueError(f"Unsupported loss_split: {getattr(config, 'loss_split', None)!r}")
+
+    def _perceptual_step_is_diffusion(self, model, config: TrainConfig) -> bool:
+        train_progress = getattr(model, "train_progress", None)
+        global_step = int(getattr(train_progress, "global_step", 0))
+        accumulation_steps = max(1, int(getattr(config, "gradient_accumulation_steps", 1)))
+        # TrainProgress.global_step advances per micro-batch; update steps fire
+        # on (global_step + 1) % accumulation_steps == 0 in GenericTrainer.
+        optimizer_step_index = global_step // accumulation_steps
+        return optimizer_step_index % 2 == 0
+
     def _perceptual_active_mask(self, batch: dict, timestep: Tensor, num_train_timesteps: int, config: TrainConfig) -> Tensor:
         cfg = config.perceptual_loss
         denom = max(1, num_train_timesteps - 1)
@@ -204,6 +221,12 @@ class ModelSetupPerceptualLossMixin:
             return base_loss
 
         cfg = config.perceptual_loss
+        split_mode = self._perceptual_loss_split_mode(config)
+        split_active = split_mode == "diffusion_depth" and cfg.depth_weight > 0.0
+        split_is_diffusion_step = split_active and self._perceptual_step_is_diffusion(model, config)
+        if split_is_diffusion_step:
+            return base_loss
+
         active = self._perceptual_active_mask(batch, data["timestep"], num_train_timesteps, config)
         if not active.any():
             return base_loss
@@ -268,4 +291,8 @@ class ModelSetupPerceptualLossMixin:
             return base_loss
 
         self._last_perceptual_loss = total.detach().item()
+        if split_active:
+            # Preserve a scalar loss on the same device/dtype without letting
+            # the diffusion base loss contribute gradients on perceptual steps.
+            return base_loss.detach() * 0.0 + total
         return base_loss + total
