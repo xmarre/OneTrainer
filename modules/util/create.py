@@ -50,18 +50,35 @@ from diffusers import (
     UniPCMultistepScheduler,
 )
 
-factory.import_dir("modules/modelSampler", "modules.modelSampler")
-factory.import_dir("modules/modelLoader", "modules.modelLoader")
-factory.import_dir("modules/modelSaver", "modules.modelSaver")
-factory.import_dir("modules/modelSetup", "modules.modelSetup")
-factory.import_dir("modules/dataLoader", "modules.dataLoader")
+factory.import_dir("modules/modelSampler", "modules.modelSampler", optional=True)
+factory.import_dir("modules/modelLoader", "modules.modelLoader", optional=True)
+factory.import_dir("modules/modelSaver", "modules.modelSaver", optional=True)
+factory.import_dir("modules/modelSetup", "modules.modelSetup", optional=True)
+factory.import_dir("modules/dataLoader", "modules.dataLoader", optional=True)
+
+
+def _missing_factory_error(component: str, model_type: ModelType, training_method: TrainingMethod | None = None) -> RuntimeError:
+    summary = factory.optional_import_error_summary()
+    method_text = f" with training method {training_method}" if training_method is not None else ""
+    message = f"No {component} is registered for model type {model_type}{method_text}."
+    if summary:
+        message += (
+            "\n\nSome optional OneTrainer model modules were skipped during startup because "
+            "their third-party dependencies are not available in this environment. "
+            "If the selected model type is one of the skipped families, install/update "
+            "the required dependency or use a model type whose modules loaded successfully.\n"
+            f"\nSkipped optional imports:\n{summary}"
+        )
+    return RuntimeError(message)
 
 def create_model_loader(
         model_type: ModelType,
         training_method: TrainingMethod = TrainingMethod.FINE_TUNE,
 ) -> BaseModelLoader | None:
     cls = factory.get(BaseModelLoader, model_type, training_method)
-    return cls() if cls is not None else None
+    if cls is None:
+        raise _missing_factory_error("model loader", model_type, training_method)
+    return cls()
 
 
 def create_model_saver(
@@ -69,7 +86,9 @@ def create_model_saver(
         training_method: TrainingMethod = TrainingMethod.FINE_TUNE,
 ) -> BaseModelSaver | None:
     cls = factory.get(BaseModelSaver, model_type, training_method)
-    return cls() if cls is not None else None
+    if cls is None:
+        raise _missing_factory_error("model saver", model_type, training_method)
+    return cls()
 
 def get_model_setup_class(
         model_type: ModelType,
@@ -85,7 +104,9 @@ def create_model_setup(
         debug_mode: bool = False,
 ) -> BaseModelSetup | None:
     cls = factory.get(BaseModelSetup, model_type, training_method)
-    return cls(train_device, temp_device, debug_mode) if cls is not None else None
+    if cls is None:
+        raise _missing_factory_error("model setup", model_type, training_method)
+    return cls(train_device, temp_device, debug_mode)
 
 def create_model_sampler(
         train_device: torch.device,
@@ -97,7 +118,9 @@ def create_model_sampler(
     cls = factory.get(BaseModelSampler, model_type, training_method)
     if cls is None:
         cls = factory.get(BaseModelSampler, model_type)
-    return cls(train_device, temp_device, model, model_type) if cls is not None else None
+    if cls is None:
+        raise _missing_factory_error("model sampler", model_type, training_method)
+    return cls(train_device, temp_device, model, model_type)
 
 def create_data_loader(
         train_device: torch.device,
@@ -119,7 +142,9 @@ def create_data_loader(
     cls = factory.get(BaseDataLoader, model_type, training_method)
     if cls is None:
         cls = factory.get(BaseDataLoader, model_type)
-    return cls(train_device, temp_device, config, model, model_setup, train_progress, is_validation) if cls is not None else None
+    if cls is None:
+        raise _missing_factory_error("data loader", model_type, training_method)
+    return cls(train_device, temp_device, config, model, model_setup, train_progress, is_validation)
 
 def create_optimizer(
         parameter_group_collection: NamedParameterGroupCollection,
