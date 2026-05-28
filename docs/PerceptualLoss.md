@@ -59,6 +59,7 @@ The depth target is computed from the decoded target latent during training. Thi
 
 ## Notes
 
+- `min_t` and `max_t` gate the normalized diffusion timestep range where perceptual loss is active. The default `min_t: 0.0` and `max_t: 1.0` apply it across the full schedule; set `max_t: 0.3` for early denoising only, or `min_t: 0.7` for late refinement only.
 - Perceptual loss decodes through the VAE during the training step. Expect extra VRAM and runtime cost.
 - `decode_chunk_size` lowers peak VRAM by decoding fewer samples at once.
 - Prior-preservation samples are excluded from the perceptual auxiliary loss when `concept_type` identifies them as prior prediction samples.

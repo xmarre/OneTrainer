@@ -8,7 +8,7 @@ while target depth is computed under no_grad and detached.
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import Literal, Optional, Tuple
 
 import torch
 import torch.nn as nn
@@ -92,10 +92,11 @@ class DifferentiableDepthEncoder(nn.Module):
             new_h = max(14, int(round(height * self.input_size / width / 14)) * 14)
         return new_h, new_w
 
-    def preprocess(self, pixels: torch.Tensor) -> torch.Tensor:
-        # Accept either OneTrainer VAE output [-1, 1] or normalized [0, 1].
-        if pixels.detach().min().item() < -0.05:
+    def preprocess(self, pixels: torch.Tensor, input_range: Literal["0_1", "minus1_1"] = "0_1") -> torch.Tensor:
+        if input_range == "minus1_1":
             pixels = (pixels + 1.0) * 0.5
+        elif input_range != "0_1":
+            raise ValueError(f"Unsupported depth input range: {input_range!r}")
         pixels = pixels.clamp(0.0, 1.0)
         _, _, height, width = pixels.shape
         new_h, new_w = self._aspect_preserving_hw(height, width)
@@ -110,8 +111,8 @@ class DifferentiableDepthEncoder(nn.Module):
         x = (x - self.mean) / self.std
         return x.to(next(self.model.parameters()).dtype)
 
-    def forward(self, pixels: torch.Tensor) -> torch.Tensor:
-        x = self.preprocess(pixels)
+    def forward(self, pixels: torch.Tensor, input_range: Literal["0_1", "minus1_1"] = "0_1") -> torch.Tensor:
+        x = self.preprocess(pixels, input_range=input_range)
         out = self.model(pixel_values=x)
         return out.predicted_depth.float()
 
@@ -120,6 +121,7 @@ def ssi_l1(
     pred: torch.Tensor,
     target: torch.Tensor,
     mask: Optional[torch.Tensor] = None,
+    reduction: Literal["mean", "none"] = "mean",
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     if pred.dim() == 2:
         pred = pred.unsqueeze(0)
@@ -141,7 +143,11 @@ def ssi_l1(
     shift = mean_g - scale * mean_p
     aligned = scale.view(-1, 1, 1) * pred + shift.view(-1, 1, 1)
     diff = (aligned - target).abs() * mask
-    loss = diff.sum() / mask.sum().clamp_min(1.0)
+    loss = diff.flatten(1).sum(1) / mask.flatten(1).sum(1).clamp_min(1.0)
+    if reduction == "mean":
+        loss = loss.mean()
+    elif reduction != "none":
+        raise ValueError(f"Unsupported reduction: {reduction!r}")
     return loss, scale.detach(), shift.detach()
 
 
@@ -150,7 +156,12 @@ def multiscale_grad_loss(
     target: torch.Tensor,
     mask: Optional[torch.Tensor] = None,
     scales: int = 4,
+    reduction: Literal["mean", "none"] = "mean",
 ) -> torch.Tensor:
+    scales = int(scales)
+    if scales < 1:
+        raise ValueError("grad_scales must be >= 1")
+
     if pred.dim() == 2:
         pred = pred.unsqueeze(0)
         target = target.unsqueeze(0)
@@ -159,7 +170,7 @@ def multiscale_grad_loss(
     elif mask.dim() == 2:
         mask = mask.unsqueeze(0)
 
-    loss = pred.new_zeros(())
+    loss = pred.new_zeros((pred.shape[0],))
     p, g, m = pred, target, mask.float()
     for scale_idx in range(scales):
         if scale_idx > 0:
@@ -171,8 +182,17 @@ def multiscale_grad_loss(
         my = m[:, 1:, :] * m[:, :-1, :]
         dx = (diff[:, :, 1:] - diff[:, :, :-1]).abs() * mx
         dy = (diff[:, 1:, :] - diff[:, :-1, :]).abs() * my
-        loss = loss + (dx.sum() / mx.sum().clamp_min(1.0)) + (dy.sum() / my.sum().clamp_min(1.0))
-    return loss / scales
+        loss = loss + (
+            dx.flatten(1).sum(1) / mx.flatten(1).sum(1).clamp_min(1.0)
+        ) + (
+            dy.flatten(1).sum(1) / my.flatten(1).sum(1).clamp_min(1.0)
+        )
+    loss = loss / scales
+    if reduction == "mean":
+        return loss.mean()
+    if reduction == "none":
+        return loss
+    raise ValueError(f"Unsupported reduction: {reduction!r}")
 
 
 def compute_depth_consistency_loss(
@@ -183,8 +203,10 @@ def compute_depth_consistency_loss(
     ssi_weight: float = 1.0,
     grad_weight: float = 0.5,
     grad_scales: int = 4,
+    input_range: Literal["0_1", "minus1_1"] = "minus1_1",
+    reduction: Literal["mean", "none"] = "mean",
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
-    d_pred = encoder(x0_pixels)
+    d_pred = encoder(x0_pixels, input_range=input_range)
 
     target = gt_depth
     if target.dim() == 2:
@@ -208,7 +230,7 @@ def compute_depth_consistency_loss(
             mode="nearest",
         ).squeeze(1).to(d_pred.device)
 
-    ssi, _, _ = ssi_l1(d_pred, target, depth_mask)
-    grad = multiscale_grad_loss(d_pred, target, depth_mask, scales=grad_scales)
+    ssi, _, _ = ssi_l1(d_pred, target, depth_mask, reduction=reduction)
+    grad = multiscale_grad_loss(d_pred, target, depth_mask, scales=grad_scales, reduction=reduction)
     loss = ssi * ssi_weight + grad * grad_weight
     return loss, ssi.detach(), grad.detach(), d_pred.detach(), target.detach()

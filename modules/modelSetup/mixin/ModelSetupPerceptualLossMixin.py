@@ -147,7 +147,8 @@ class ModelSetupPerceptualLossMixin:
 
     def _perceptual_active_mask(self, batch: dict, timestep: Tensor, num_train_timesteps: int, config: TrainConfig) -> Tensor:
         cfg = config.perceptual_loss
-        t_ratio = timestep.float() / float(max(1, num_train_timesteps))
+        denom = max(1, num_train_timesteps - 1)
+        t_ratio = timestep.float() / float(denom)
         active = (t_ratio >= float(cfg.min_t)) & (t_ratio <= float(cfg.max_t))
 
         concept_type = batch.get("concept_type")
@@ -235,14 +236,14 @@ class ModelSetupPerceptualLossMixin:
             self._last_perceptual_edge_loss = raw.detach().item()
 
         if cfg.depth_weight > 0.0:
-            # Depth-Anything expects [0,1] or [-1,1]. Optional blur mirrors the
+            # Depth-Anything gets decoded VAE pixels in [-1, 1]. Optional blur mirrors the
             # ai-toolkit-perceptual knob used to suppress texture leakage.
             pred_for_depth = gaussian_blur_2d(pred_pixels.float(), float(cfg.depth_pixel_blur_sigma))
             target_for_depth = gaussian_blur_2d(target_pixels.float(), float(cfg.depth_pixel_blur_sigma))
             encoder = self._get_perceptual_depth_encoder(cfg, self.train_device)
             with torch.no_grad():
-                target_depth = encoder(target_for_depth).detach()
-            depth_loss, depth_ssi, depth_grad, _, _ = compute_depth_consistency_loss(
+                target_depth = encoder(target_for_depth, input_range="minus1_1").detach()
+            depth_per_sample, depth_ssi_per_sample, depth_grad_per_sample, _, _ = compute_depth_consistency_loss(
                 encoder=encoder,
                 x0_pixels=pred_for_depth,
                 gt_depth=target_depth,
@@ -250,11 +251,18 @@ class ModelSetupPerceptualLossMixin:
                 ssi_weight=float(cfg.depth_ssi_weight),
                 grad_weight=float(cfg.depth_grad_weight),
                 grad_scales=int(cfg.depth_grad_scales),
+                input_range="minus1_1",
+                reduction="none",
             )
+            depth_loss = self._weighted_sample_mean(depth_per_sample, batch, active)
             total = total + depth_loss * float(cfg.depth_weight)
             self._last_perceptual_depth_loss = depth_loss.detach().item()
-            self._last_perceptual_depth_ssi = depth_ssi.detach().item()
-            self._last_perceptual_depth_grad = depth_grad.detach().item()
+            self._last_perceptual_depth_ssi = self._weighted_sample_mean(
+                depth_ssi_per_sample, batch, active
+            ).detach().item()
+            self._last_perceptual_depth_grad = self._weighted_sample_mean(
+                depth_grad_per_sample, batch, active
+            ).detach().item()
 
         if total.detach().abs().item() == 0.0:
             return base_loss
