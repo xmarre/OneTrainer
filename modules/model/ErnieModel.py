@@ -16,11 +16,49 @@ from torch import Tensor
 from diffusers import (
     AutoencoderKLFlux2,
     DiffusionPipeline,
-    ErnieImagePipeline,
     ErnieImageTransformer2DModel,
     FlowMatchEulerDiscreteScheduler,
 )
 from transformers import AutoTokenizer, Mistral3Model
+
+
+class _ErnieImagePipelineFallback(DiffusionPipeline):
+    """Minimal ERNIE pipeline container for diffusers builds without ErnieImagePipeline.
+
+    OneTrainer's ERNIE sampler performs its own denoising loop and only reads
+    `pipeline.transformer` and `pipeline.vae`. The fine-tune saver only needs a
+    DiffusionPipeline-compatible object that registers the loaded modules before
+    `save_pretrained`. Keeping this fallback local avoids making UI startup depend
+    on a very recent diffusers pipeline export.
+    """
+
+    model_cpu_offload_seq = "text_encoder->transformer->vae"
+    _optional_components = []
+
+    def __init__(
+            self,
+            *,
+            transformer: ErnieImageTransformer2DModel | None,
+            vae: AutoencoderKLFlux2 | None,
+            text_encoder: Mistral3Model | None,
+            tokenizer: AutoTokenizer | None,
+            scheduler: FlowMatchEulerDiscreteScheduler | None,
+    ):
+        super().__init__()
+        self.register_modules(
+            transformer=transformer,
+            vae=vae,
+            text_encoder=text_encoder,
+            tokenizer=tokenizer,
+            scheduler=scheduler,
+        )
+
+    def __call__(self, *args, **kwargs):
+        raise RuntimeError(
+            "The installed diffusers package does not expose ErnieImagePipeline. "
+            "OneTrainer can train/sample ERNIE through its native sampler, but "
+            "direct pipeline inference requires updating diffusers."
+        )
 
 
 class ErnieModel(BaseModel):
@@ -100,6 +138,17 @@ class ErnieModel(BaseModel):
         self.transformer.eval()
 
     def create_pipeline(self) -> DiffusionPipeline:
+        try:
+            from diffusers import ErnieImagePipeline
+        except ImportError:
+            return _ErnieImagePipelineFallback(
+                transformer=self.transformer,
+                vae=self.vae,
+                text_encoder=self.text_encoder,
+                tokenizer=self.tokenizer,
+                scheduler=self.noise_scheduler,
+            )
+
         return ErnieImagePipeline(
             transformer=self.transformer,
             vae=self.vae,
